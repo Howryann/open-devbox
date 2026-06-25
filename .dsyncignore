@@ -1,0 +1,54 @@
+# ~/.dsyncignore - dsync 全局忽略规则
+# Mac→Linux 同步时跨平台不兼容或不需要的文件
+# 项目级可通过 .dsyncignore 追加额外规则
+#
+# mutagen 忽略语法: 不含 / 的模式自动递归匹配所有层级
+# 带前缀 / 的模式只匹配同步根目录
+
+# --- Python ---
+.venv/
+venv/
+*.pyc
+*.pyo
+*.so
+__pycache__/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# --- Node ---
+node_modules/
+
+# --- Java/Kotlin ---
+*.class
+*.jar
+*.war
+.gradle/
+.m2/
+
+# --- Rust ---
+target/
+
+# --- 通用构建产物 ---
+build/
+dist/
+*.o
+*.a
+*.dylib
+
+# --- 测试/覆盖率 ---
+htmlcov/
+.coverage
+
+# --- IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- 系统文件 ---
+.DS_Store
+.AppleDouble
+Thumbs.db
+*.tmp

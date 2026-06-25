@@ -1,0 +1,39 @@
+services:
+  devbox:
+    image: ${DEVBOX_IMAGE:-devbox:latest}
+    container_name: ${DEVBOX_CONTAINER_NAME:-devbox}
+    ports:
+      - "${DEVBOX_SSH_PORT:-2222}:22"
+    volumes:
+      - ./workspace/:/workspace
+      - ./temp/:/root/temp
+      - ./ssh/:/run/devbox/ssh:ro
+      - devbox_root:/root
+      - devbox_cache:/root/.cache
+      - devbox_config:/root/.config
+      - devbox_gradle:/root/.gradle
+      - devbox_m2:/root/.m2
+      - devbox_npm:/root/.npm
+      - devbox_pnpm:/root/.local/share/pnpm
+      - devbox_uv:/root/.local/share/uv
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      DEVBOX_SSH_SOURCE: /run/devbox/ssh
+    privileged: true              # Trusted Root Workspace: personal high-trust devbox only.
+    devices:
+      - /dev/fuse                 # Required for FUSE/sshfs workflows.
+    cap_add:
+      - SYS_ADMIN                 # Required for mount operations.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: always
+
+volumes:
+  devbox_root:
+  devbox_cache:
+  devbox_config:
+  devbox_gradle:
+  devbox_m2:
+  devbox_npm:
+  devbox_pnpm:
+  devbox_uv:

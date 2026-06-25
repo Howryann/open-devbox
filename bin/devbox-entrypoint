@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SSH_SOURCE="${DEVBOX_SSH_SOURCE:-/run/devbox/ssh}"
+
+# Copy all SSH files from host staging mount into /root/.ssh.
+# Copy (rather than direct bind-mount) is required so sshd sees root-owned
+# files with correct permissions (bind-mount preserves host UID/GID).
+initialize_ssh() {
+  mkdir -p /root/.ssh
+  chmod 700 /root/.ssh
+
+  if [[ -d "$SSH_SOURCE" ]]; then
+    # Copy all files from the staging SSH directory
+    cp -r "$SSH_SOURCE"/. /root/.ssh/ 2>/dev/null || true
+    chown -R root:root /root/.ssh
+    chmod 700 /root/.ssh
+    find /root/.ssh -type f -exec chmod 600 {} \;
+    find /root/.ssh -type d -exec chmod 700 {} \;
+  fi
+
+  if [[ ! -s /root/.ssh/authorized_keys ]]; then
+    echo "WARNING: /root/.ssh/authorized_keys not found or empty. SSH key auth will not work." >&2
+  fi
+}
+
+mkdir -p /var/run/sshd /workspace/projects /root/.cache /root/.config
+ssh-keygen -A
+initialize_ssh
+
+exec /usr/sbin/sshd -D -e

@@ -1,0 +1,30 @@
+# Local runtime data
+workspace/
+temp/
+
+# Local agent configuration
+.agents/
+
+# Local secrets and SSH material
+ssh/*
+!ssh/.gitkeep
+!ssh/authorized_keys.example
+*.pem
+*.key
+*.pub
+
+# Environment overrides
+.env
+.env.*
+!.env.example
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/

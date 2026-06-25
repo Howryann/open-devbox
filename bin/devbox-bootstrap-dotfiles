@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOTFILES_REPO="${DEVBOX_DOTFILES_REPO:-}"
+DOTFILES_DIR="${DEVBOX_DOTFILES_DIR:-/root/.dotfiles}"
+
+usage() {
+  cat <<'USAGE'
+Usage: devbox-bootstrap-dotfiles [-- <command> [args...]]
+
+Environment:
+  DEVBOX_DOTFILES_REPO  Git repository URL for personal dotfiles.
+  DEVBOX_DOTFILES_DIR   Clone target. Defaults to /root/.dotfiles.
+
+Behavior:
+  - Clones DEVBOX_DOTFILES_REPO when DEVBOX_DOTFILES_DIR does not exist.
+  - Updates the existing repository when DEVBOX_DOTFILES_DIR exists.
+  - Runs the command after -- when provided.
+  - Otherwise runs ./install or ./bootstrap if one exists in the dotfiles repo.
+  - If no apply command exists, leaves the repository cloned for manual use.
+USAGE
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ -z "$DOTFILES_REPO" ]]; then
+  echo "DEVBOX_DOTFILES_REPO is required" >&2
+  usage >&2
+  exit 2
+fi
+
+if [[ -d "$DOTFILES_DIR/.git" ]]; then
+  git -C "$DOTFILES_DIR" pull --ff-only
+elif [[ -e "$DOTFILES_DIR" ]]; then
+  echo "$DOTFILES_DIR exists but is not a Git repository" >&2
+  exit 1
+else
+  git clone "$DOTFILES_REPO" "$DOTFILES_DIR"
+fi
+
+cd "$DOTFILES_DIR"
+
+if [[ "${1:-}" == "--" ]]; then
+  shift
+  if [[ $# -eq 0 ]]; then
+    echo "No command provided after --" >&2
+    exit 2
+  fi
+  exec "$@"
+fi
+
+if [[ -x ./install ]]; then
+  exec ./install
+fi
+
+if [[ -x ./bootstrap ]]; then
+  exec ./bootstrap
+fi
+
+echo "Dotfiles are available at $DOTFILES_DIR. No executable ./install or ./bootstrap found."

@@ -1,0 +1,3 @@
+# Copy your public key to ssh/authorized_keys before starting the container.
+# Example:
+# ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... user@example

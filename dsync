@@ -1,0 +1,302 @@
+#!/bin/bash
+set -euo pipefail
+
+# =============================================================================
+# dsync - 基于 mutagen 的 Mac→Linux 项目同步工具
+# 用法: dsync [up|down|status|flush|reset|pause|resume|monitor|doctor]
+# =============================================================================
+
+# --- 配置 (可通过环境变量或受信任的项目 .dsyncrc 覆盖) ---
+DSYNC_REMOTE_HOST="${DSYNC_REMOTE_HOST:-devbox}"
+DSYNC_REMOTE_BASE_DIR="${DSYNC_REMOTE_BASE_DIR:-/workspace/projects}"
+DSYNC_SYNC_MODE="${DSYNC_SYNC_MODE:-two-way-resolved}"
+DSYNC_REMOTE_NAME="${DSYNC_REMOTE_NAME:-$(basename "$(pwd)")}"
+
+# 加载项目级配置；.dsyncrc 是受信任的 shell 配置文件。
+[[ -f ".dsyncrc" ]] && source ".dsyncrc"
+
+# --- 通用工具 ---
+fatal() {
+  echo "❌ $*" >&2
+  exit 1
+}
+
+warn() {
+  echo "⚠️  $*" >&2
+}
+
+require_command() {
+  local command_name="$1"
+  local install_hint="${2:-}"
+
+  if ! command -v "$command_name" &>/dev/null; then
+    if [[ -n "$install_hint" ]]; then
+      fatal "未找到 $command_name，请先安装: $install_hint"
+    fi
+    fatal "未找到 $command_name"
+  fi
+}
+
+path_hash() {
+  if command -v shasum &>/dev/null; then
+    printf '%s' "$(pwd)" | shasum -a 256 | cut -c 1-8
+  elif command -v sha256sum &>/dev/null; then
+    printf '%s' "$(pwd)" | sha256sum | cut -c 1-8
+  else
+    fatal "未找到 shasum 或 sha256sum，无法生成 session id"
+  fi
+}
+
+shell_quote() {
+  local value="$1"
+  printf "'%s'" "${value//\'/\'\\\'\'}"
+}
+
+validate_config() {
+  [[ -n "$DSYNC_REMOTE_HOST" ]] || fatal "DSYNC_REMOTE_HOST 不能为空"
+  [[ -n "$DSYNC_SYNC_MODE" ]] || fatal "DSYNC_SYNC_MODE 不能为空"
+
+  if [[ ! "$DSYNC_REMOTE_BASE_DIR" = /* ]]; then
+    fatal "DSYNC_REMOTE_BASE_DIR 必须是绝对路径: $DSYNC_REMOTE_BASE_DIR"
+  fi
+  if [[ "$DSYNC_REMOTE_BASE_DIR" == "/" ]]; then
+    fatal "DSYNC_REMOTE_BASE_DIR 不能是 /"
+  fi
+  DSYNC_REMOTE_BASE_DIR="${DSYNC_REMOTE_BASE_DIR%/}"
+
+  if [[ -z "$DSYNC_REMOTE_NAME" || "$DSYNC_REMOTE_NAME" == "." || "$DSYNC_REMOTE_NAME" == ".." ]]; then
+    fatal "DSYNC_REMOTE_NAME 不能为空、. 或 .."
+  fi
+  if [[ ! "$DSYNC_REMOTE_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    fatal "DSYNC_REMOTE_NAME 只能包含字母、数字、点、下划线和连字符: $DSYNC_REMOTE_NAME"
+  fi
+}
+
+validate_config
+
+# --- Session 标识 ---
+SESSION_ID="dsync-${DSYNC_REMOTE_NAME}-$(path_hash)"
+REMOTE_PATH="$DSYNC_REMOTE_BASE_DIR/$DSYNC_REMOTE_NAME"
+
+print_summary() {
+  echo "session: $SESSION_ID"
+  echo "local:   $(pwd)"
+  echo "remote:  $DSYNC_REMOTE_HOST:$REMOTE_PATH"
+  echo "mode:    $DSYNC_SYNC_MODE"
+}
+
+session_exists() {
+  mutagen sync list "$SESSION_ID" &>/dev/null
+}
+
+ensure_mutagen() {
+  require_command mutagen "brew install mutagen-io/mutagen/mutagen"
+}
+
+ensure_ssh() {
+  require_command ssh
+}
+
+ensure_remote_path() {
+  local quoted_path
+  quoted_path="$(shell_quote "$1")"
+  ssh "$DSYNC_REMOTE_HOST" "mkdir -p -- $quoted_path && cd -- $quoted_path"
+}
+
+# --- 构建忽略规则 (bash 数组，解决引号展开问题) ---
+IGNORES=()
+
+load_ignore_file() {
+  local file="$1"
+  while IFS= read -r line; do
+    line="${line%%#*}"                          # 去掉行内注释
+    line="${line#"${line%%[![:space:]]*}"}"     # trim leading
+    line="${line%"${line##*[![:space:]]}"}"     # trim trailing
+    [[ -z "$line" || "$line" == "!"* ]] && continue
+    IGNORES+=("--ignore=$line")
+  done < "$file"
+}
+
+load_ignore_rules() {
+  # 全局 ~/.dsyncignore
+  if [[ -f "$HOME/.dsyncignore" ]]; then
+    load_ignore_file "$HOME/.dsyncignore"
+    echo "💡 已加载全局忽略规则 (~/.dsyncignore)"
+  fi
+
+  # 当前项目 .dsyncignore；不默认读取 .gitignore，因为它不等同于同步忽略规则。
+  if [[ -f ".dsyncignore" ]]; then
+    load_ignore_file ".dsyncignore"
+    echo "💡 已加载项目 .dsyncignore"
+  fi
+}
+
+run_up() {
+  ensure_mutagen
+  ensure_ssh
+  load_ignore_rules
+
+  if session_exists; then
+    warn "同步 session 已存在，不会自动重建"
+    print_summary
+    echo ""
+    echo "可用命令: dsync status | dsync monitor | dsync reset"
+    exit 1
+  fi
+
+  echo "📡 启动同步"
+  print_summary
+  ensure_remote_path "$REMOTE_PATH"
+  mutagen sync create --name="$SESSION_ID" \
+    "$(pwd)" "$DSYNC_REMOTE_HOST:$REMOTE_PATH" \
+    "${IGNORES[@]}" \
+    --sync-mode="$DSYNC_SYNC_MODE" \
+    --symlink-mode=portable \
+    --compression=zstandard \
+    --scan-mode=accelerated
+  echo "✅ 同步已启动，可使用 'dsync monitor' 观察状态"
+}
+
+run_down() {
+  ensure_mutagen
+  echo "🛑 停止同步..."
+  if mutagen sync terminate "$SESSION_ID" 2>/dev/null; then
+    echo "✅ 同步已停止"
+  else
+    warn "未找到活跃 session"
+  fi
+}
+
+run_status() {
+  ensure_mutagen
+  print_summary
+  echo ""
+  mutagen sync list "$SESSION_ID" 2>/dev/null || warn "未找到活跃 session"
+}
+
+run_flush() {
+  ensure_mutagen
+  if ! session_exists; then
+    fatal "未找到活跃 session，请先执行 'dsync up'"
+  fi
+  echo "🔄 强制同步..."
+  mutagen sync flush "$SESSION_ID"
+}
+
+run_reset() {
+  ensure_mutagen
+  echo "♻️  重建同步 session..."
+  mutagen sync terminate "$SESSION_ID" 2>/dev/null || true
+  run_up
+}
+
+run_pause() {
+  ensure_mutagen
+  if ! session_exists; then
+    fatal "未找到活跃 session，请先执行 'dsync up'"
+  fi
+  mutagen sync pause "$SESSION_ID"
+  echo "⏸️  同步已暂停"
+}
+
+run_resume() {
+  ensure_mutagen
+  if ! session_exists; then
+    fatal "未找到活跃 session，请先执行 'dsync up'"
+  fi
+  mutagen sync resume "$SESSION_ID"
+  echo "▶️  同步已恢复"
+}
+
+run_monitor() {
+  ensure_mutagen
+  if ! session_exists; then
+    fatal "未找到活跃 session，请先执行 'dsync up'"
+  fi
+  print_summary
+  echo ""
+  mutagen sync monitor "$SESSION_ID"
+}
+
+run_doctor() {
+  echo "🩺 dsync doctor"
+  print_summary
+  echo ""
+
+  require_command mutagen "brew install mutagen-io/mutagen/mutagen"
+  echo "✅ mutagen: $(command -v mutagen)"
+
+  require_command ssh
+  echo "✅ ssh: $(command -v ssh)"
+
+  echo "🔎 检查 Mutagen 本地状态..."
+  mutagen sync list &>/dev/null
+  echo "✅ mutagen sync list 可用"
+
+  echo "🔎 检查 SSH 连接: $DSYNC_REMOTE_HOST"
+  ssh "$DSYNC_REMOTE_HOST" true
+  echo "✅ SSH 连接可用"
+
+  echo "🔎 检查远程项目根目录: $DSYNC_REMOTE_BASE_DIR"
+  ensure_remote_path "$DSYNC_REMOTE_BASE_DIR"
+  echo "✅ 远程项目根目录可创建并进入"
+
+  echo ""
+  echo "提示: dsync 不默认读取 .gitignore；请使用 ~/.dsyncignore 或项目 .dsyncignore 配置同步忽略规则。"
+  echo "✅ doctor 检查完成"
+}
+
+print_usage() {
+  echo "Usage: dsync [up|down|status|flush|reset|pause|resume|monitor|doctor]"
+  echo ""
+  echo "Commands:"
+  echo "  up       启动同步并退出"
+  echo "  down     停止同步"
+  echo "  status   查看同步状态"
+  echo "  flush    强制 flush 同步"
+  echo "  reset    重建同步 session"
+  echo "  pause    暂停同步"
+  echo "  resume   恢复同步"
+  echo "  monitor  前台观察同步状态"
+  echo "  doctor   检查本地依赖、SSH 和远程目录"
+  echo ""
+  echo "Config:"
+  echo "  DSYNC_REMOTE_HOST=$DSYNC_REMOTE_HOST"
+  echo "  DSYNC_REMOTE_BASE_DIR=$DSYNC_REMOTE_BASE_DIR"
+  echo "  DSYNC_REMOTE_NAME=$DSYNC_REMOTE_NAME"
+  echo "  DSYNC_SYNC_MODE=$DSYNC_SYNC_MODE"
+}
+
+# --- 命令分发 ---
+case "${1:-}" in
+up)
+  run_up
+  ;;
+down)
+  run_down
+  ;;
+status)
+  run_status
+  ;;
+flush)
+  run_flush
+  ;;
+reset)
+  run_reset
+  ;;
+pause)
+  run_pause
+  ;;
+resume)
+  run_resume
+  ;;
+monitor)
+  run_monitor
+  ;;
+doctor)
+  run_doctor
+  ;;
+*)
+  print_usage
+  ;;
+esac
